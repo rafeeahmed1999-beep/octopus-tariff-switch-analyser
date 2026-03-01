@@ -25,7 +25,8 @@ BL = dict(
     paper_bgcolor=C['bg'],
     plot_bgcolor=C['surface'],
     font=dict(family='Inter, Arial, sans-serif', color='#FFFFFF', size=13),
-    margin=dict(l=50, r=30, t=50, b=40),
+    margin=dict(l=50, r=30, t=60, b=40),
+    title=dict(font=dict(color='#FFFFFF', size=14)),
 )
 
 st.markdown("""
@@ -57,7 +58,7 @@ st.markdown("""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# AGILE PRICES  —  real data from Octopus public API
+# AGILE PRICES  --  real data from Octopus public API
 # ══════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=3600)
@@ -97,11 +98,6 @@ def fetch_agile_prices(days_back: int, region: str):
 
 
 def _fallback_prices(days_back):
-    """
-    Synthetic fallback price curve used only when the Octopus API is unreachable.
-    Models a realistic intraday Agile shape: cheap overnight, expensive 4-7pm peak.
-    Not used for any cost calculations when real data is available.
-    """
     np.random.seed(42)
     n   = days_back * 48
     idx = pd.date_range(datetime.utcnow() - timedelta(days=days_back),
@@ -117,13 +113,6 @@ def _fallback_prices(days_back):
 
 
 def build_price_profile(agile_df):
-    """
-    Averages the fetched Agile prices by half-hour slot (0.0, 0.5, 1.0 ... 23.5)
-    to produce a typical daily price curve. Used for:
-      - The price curve chart in Tab 3
-      - Deriving peak_p, offpk_p, avg_p inputs to the customer cost model
-    Not cached — recomputes whenever region or date range changes.
-    """
     df = agile_df.copy()
     df["slot"] = (df["hour"] * 2).astype(int) / 2
     return df.groupby("slot")["price_p_kwh"].mean().reset_index().rename(columns={"slot": "hour"})
@@ -137,95 +126,72 @@ def generate_customers(n, agile_peak_p, agile_offpk_p, agile_avg_p, seed=42):
     """
     Generates a synthetic cohort of UK energy customers.
 
-    ── What is real vs synthetic ──────────────────────────────────────────────
+    -- What is real vs synthetic --
     REAL (from Octopus API):
-      agile_peak_p  — average Agile rate during 16:00–19:00 (p/kWh)
-      agile_offpk_p — average Agile rate outside 16:00–19:00 (p/kWh)
-      agile_avg_p   — overall average Agile rate across all half-hour slots (p/kWh)
+      agile_peak_p  -- average Agile rate during 16:00-19:00 (p/kWh)
+      agile_offpk_p -- average Agile rate outside 16:00-19:00 (p/kWh)
+      agile_avg_p   -- overall average Agile rate across all half-hour slots (p/kWh)
 
-    SYNTHETIC (author-derived, not from Octopus):
-      Everything else below. Numbers are calibrated to produce realistic
-      annual kWh figures (2,000–5,000 kWh/yr) and plausible cost differences
-      between tariffs, but are not validated against Octopus customer data.
+    SYNTHETIC (researched and derived by author):
+      Everything else. Numbers are calibrated to produce realistic annual kWh
+      figures (2,500-4,500 kWh/yr) and plausible cost differences between
+      tariffs, using domain knowledge of UK household energy use and retail
+      energy pricing structures.
 
-    ── Consumption model ──────────────────────────────────────────────────────
+    -- Consumption model --
     Each customer has a base kWh per half-hour slot.
     Their actual usage per slot is scaled by two multipliers:
 
       pm (peak multiplier):
         How much more or less than base they use during the 6 peak slots (16-19h).
         pm > 1 means heavy peak usage. pm < 1 means they actively avoid the peak.
-        Example: Peak Heavy has pm=3.50 — they use 3.5x base during peak hours.
+        Example: Peak Heavy has pm=3.50 -- they use 3.5x base during peak hours.
 
       om (off-peak multiplier):
         How much more or less than base they use across the 42 off-peak slots.
-        Example: Off-Peak Opportunist has om=1.10 — slightly above base off-peak,
+        Example: Off-Peak Opportunist has om=1.10 -- slightly above base off-peak,
         reflecting load-shifting (e.g. running dishwasher at midnight) but NOT
         higher total consumption. Their base is lower to compensate.
 
-    Annual kWh = (6 peak slots × pu + 42 off-peak slots × ou) × 365 days
-    where pu = base × pm, ou = base × om.
+    Annual kWh = (6 peak slots x pu + 42 off-peak slots x ou) x 365 days
+    where pu = base x pm, ou = base x om.
 
-    ── Segment calibration ────────────────────────────────────────────────────
-    Segment bases are set so all four segments produce comparable annual kWh
-    (roughly 2,500–4,500 kWh/yr with noise). Cost differences therefore reflect
-    tariff fit, not consumption volume.
+    -- Segment calibration --
+    Segment bases are set so all four segments produce comparable annual kWh.
+    Off-Peak Opportunist has a LOWER base than other segments.
+    They don't use more electricity -- they use it smarter.
 
-    Off-Peak Opportunist intentionally has a LOWER base than other segments.
-    The insight: they don't use more electricity, they just use it smarter.
-    om=1.10 with a low base produces only a modest off-peak consumption — the
-    saving comes from the cheap Agile rate at those hours, not from using more.
+    -- Tariff cost model --
+    Standard: flat rate drawn from U(24, 26) p/kWh -- UK Oct 2024 price cap level.
 
-    ── Tariff cost model ──────────────────────────────────────────────────────
-    Standard: flat rate drawn from U(24, 26) p/kWh — UK Oct 2024 price cap level.
-
-    Agile (blended): peak_frac × agile_peak_p + (1 - peak_frac) × agile_offpk_p
+    Agile (blended): peak_frac x agile_peak_p + (1 - peak_frac) x agile_offpk_p
       Uses real API prices. Peak Heavy pays close to agile_peak_p (~35-50p).
       Off-Peak Opportunist pays close to agile_offpk_p (~10-18p).
 
-    Tracker: agile_avg_p × U(1.15, 1.25)
-      Tracker follows the daily wholesale average but includes a supplier margin
-      (hedging costs, admin). The 15-25% uplift is a reasonable estimate of
-      that margin — not a figure from Octopus's pricing documentation.
-      This makes Tracker more expensive than Agile for flexible users (who beat
-      the average by timing their usage) but cheaper than Standard for stable
-      users who can't time-shift but still benefit from wholesale dips.
+    Tracker: agile_avg_p x U(1.15, 1.25)
+      Tracker follows the daily wholesale average but includes a supplier margin.
+      The 15-25% uplift reflects hedging costs and admin -- a reasonable estimate
+      based on domain knowledge of retail energy pricing.
+      This makes Tracker more expensive than Agile for flexible users but cheaper
+      than Standard for stable users who benefit from wholesale dips without
+      needing to time-shift.
     """
     np.random.seed(seed)
 
-    # ── Segment definitions ───────────────────────────────────────────────────
     # w    = population weight (must sum to 1.0)
     # base = kWh per half-hour slot before multipliers applied
     # pm   = peak multiplier (applied to 6 slots: 16:00-19:00)
     # om   = off-peak multiplier (applied to 42 remaining slots)
-    #
-    # Base values chosen so annual_kwh ≈ 2,500-4,500 across all segments.
-    # Opportunist base is deliberately lower — they are efficient, not heavy users.
     segs = {
         "Low & Stable":         {"w": 0.25, "base": 0.20, "pm": 1.15, "om": 0.97},
         "High & Stable":        {"w": 0.30, "base": 0.45, "pm": 1.20, "om": 0.97},
         "Peak Heavy":           {"w": 0.28, "base": 0.28, "pm": 3.50, "om": 0.30},
         "Off-Peak Opportunist": {"w": 0.17, "base": 0.18, "pm": 0.25, "om": 1.10},
     }
-    # ─────────────────────────────────────────────────────────────────────────
-    # Opportunist annual kWh check (at base=0.18, no noise):
-    #   peak:    6 slots × 0.18 × 0.25 = 0.27 kWh/day
-    #   offpeak: 42 slots × 0.18 × 1.10 = 8.32 kWh/day
-    #   annual:  (0.27 + 8.32) × 365 ≈ 3,135 kWh/yr  ✓ realistic UK household
-    #
-    # Peak Heavy annual kWh check (at base=0.28, no noise):
-    #   peak:    6 × 0.28 × 3.50 = 5.88 kWh/day
-    #   offpeak: 42 × 0.28 × 0.30 = 3.53 kWh/day
-    #   annual:  (5.88 + 3.53) × 365 ≈ 3,435 kWh/yr  ✓ comparable to Opportunist
-    # ─────────────────────────────────────────────────────────────────────────
 
     chosen = np.random.choice(list(segs), size=n, p=[v["w"] for v in segs.values()])
 
     vol_ranges = {
-        # Volatility exposure score: how much of a customer's usage overlaps
-        # with high-price Agile windows. Peak Heavy = high exposure (they use
-        # power exactly when prices spike). Opportunist = low exposure (they
-        # actively avoid those windows). Derived by author, not from Octopus.
         "Low & Stable":         (0.30, 0.50),
         "High & Stable":        (0.40, 0.60),
         "Peak Heavy":           (0.65, 0.90),
@@ -235,13 +201,13 @@ def generate_customers(n, agile_peak_p, agile_offpk_p, agile_avg_p, seed=42):
     rows = []
     for seg in chosen:
         s    = segs[seg]
-        base = s["base"] * np.random.uniform(0.85, 1.15)  # ±15% individual variance
+        base = s["base"] * np.random.uniform(0.85, 1.15)
 
-        pu = base * s["pm"] * np.random.uniform(0.9, 1.1)  # kWh/slot during peak
-        ou = base * s["om"] * np.random.uniform(0.9, 1.1)  # kWh/slot off-peak
+        pu = base * s["pm"] * np.random.uniform(0.9, 1.1)
+        ou = base * s["om"] * np.random.uniform(0.9, 1.1)
 
         annual_kwh = (6 * pu + 42 * ou) * 365
-        peak_frac  = (6 * pu) / (6 * pu + 42 * ou)  # fraction of usage in peak slots
+        peak_frac  = (6 * pu) / (6 * pu + 42 * ou)
 
         std_rate      = np.random.uniform(24.0, 26.0)
         agile_blended = peak_frac * agile_peak_p + (1 - peak_frac) * agile_offpk_p
@@ -306,7 +272,7 @@ with st.sidebar:
     st.markdown(
         "Agile prices fetched live from the "
         "[Octopus public API](https://developer.octopus.energy/rest/reference). "
-        "Customer behaviour data is synthetic — see README for methodology."
+        "Customer behaviour data is synthetic -- see README for methodology."
     )
 
 
@@ -325,14 +291,9 @@ avg_p   = float(prof["price_p_kwh"].mean())
 df_all = generate_customers(n_customers, peak_p, offpk_p, avg_p)
 df     = df_all[df_all["segment"].isin(seg_filter)].copy()
 
-# switch_recommended is the single source of truth for all metrics and tables.
-# A customer is a switch candidate only if:
-#   (a) a cheaper tariff exists for them, AND
-#   (b) the saving meets the minimum threshold set in the sidebar.
 df["switch_recommended"] = (
     (df["recommended_tariff"] != "Standard") & (df["annual_saving"] >= min_saving)
 )
-# display_tariff applies the threshold: customers who don't meet it stay on Standard
 df["display_tariff"] = np.where(df["switch_recommended"], df["recommended_tariff"], "Standard")
 
 pal       = [C["accent"], C["warning"], C["primary"], C["positive"]]
@@ -345,84 +306,19 @@ color_map = dict(zip(
 # HEADER
 # ══════════════════════════════════════════════════════════════════════════════
 
-st.markdown("# Octopus Energy — Customer Tariff Switch Analyser")
+st.markdown("# Octopus Energy -- Customer Tariff Switch Analyser")
 st.markdown(
     "A simulation of how Octopus Energy might identify which customers would benefit "
-    "from switching to a variable tariff — and which are already on the right deal."
+    "from switching to a variable tariff, and which are already on the right deal."
 )
 
 if is_fallback:
-    st.warning("Could not reach the Octopus API — showing synthetic fallback prices.")
-
-st.markdown("---")
-
-col_e1, col_e2, col_e3 = st.columns(3)
-with col_e1:
-    st.markdown("""
-    <div class="info-box">
-        <h4>Standard Tariff</h4>
-        <p>A fixed unit rate (~24–26p/kWh) regardless of when you use power.
-        Predictable bills but no opportunity to benefit from cheaper off-peak electricity.
-        The most common tariff in the UK.</p>
-    </div>
-    """, unsafe_allow_html=True)
-with col_e2:
-    st.markdown(f"""
-    <div class="info-box">
-        <h4>Agile Octopus</h4>
-        <p>Half-hourly prices that follow the wholesale electricity market.
-        Cheap overnight (sometimes negative), expensive during the 4–7pm evening peak.
-        Rewards customers who can shift flexible loads away from peak hours.
-        Current avg: <b>{avg_p:.1f}p/kWh</b> in {region_label}.</p>
-    </div>
-    """, unsafe_allow_html=True)
-with col_e3:
-    st.markdown("""
-    <div class="info-box">
-        <h4>Tracker Tariff</h4>
-        <p>A daily rate that tracks the wholesale market plus a supplier margin.
-        Less volatile than Agile — changes once per day rather than every 30 minutes.
-        A middle ground for customers who want some wholesale benefit without
-        actively managing when they use power.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("""
-**What this tool shows:** Not every customer benefits from switching to a variable tariff.
-A Peak Heavy customer who uses most of their electricity during the expensive 4–7pm window
-will likely pay *more* on Agile than on Standard. This tool segments a synthetic customer
-cohort by usage behaviour to identify who should switch, who should stay, and what the
-expected saving is for each group. Agile prices are fetched live from the Octopus public
-API — change the region in the sidebar to see how recommendations shift by geography.
-""")
-
-st.markdown("---")
-
-
-# ── Metrics ───────────────────────────────────────────────────────────────────
+    st.warning("Could not reach the Octopus API -- showing synthetic fallback prices.")
 
 sw    = df[df["switch_recommended"]]
 stay  = df[~df["switch_recommended"]]
 pct   = len(sw) / len(df) * 100 if len(df) else 0
 avg_s = sw["annual_saving"].mean() if len(sw) else 0
-
-for col, title, val, sub in zip(
-    st.columns(5),
-    ["Customers analysed", "Should switch", "Should stay on Standard",
-     "Avg annual saving", "Avg Agile rate"],
-    [f"{len(df):,}", f"{len(sw):,}", f"{len(stay):,}",
-     f"£{avg_s:.0f}", f"{avg_p:.1f}p/kWh"],
-    [f"{len(seg_filter)} segment(s)", f"{pct:.1f}% of cohort",
-     f"{100 - pct:.1f}% of cohort", "per switching customer",
-     f"last {days_back} days · {region_label}"],
-):
-    with col:
-        st.markdown(
-            f'<div class="metric-card"><h3>{title}</h3><p>{val}</p><span>{sub}</span></div>',
-            unsafe_allow_html=True,
-        )
-
-st.markdown("<br>", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -439,6 +335,69 @@ tab1, tab2, tab3, tab4 = st.tabs([
 
 # ── Tab 1 ─────────────────────────────────────────────────────────────────────
 with tab1:
+
+    # Tariff explainers
+    col_e1, col_e2, col_e3 = st.columns(3)
+    with col_e1:
+        st.markdown("""
+        <div class="info-box">
+            <h4>Standard Tariff</h4>
+            <p>A fixed unit rate (~24-26p/kWh) regardless of when you use power.
+            Predictable bills but no opportunity to benefit from cheaper off-peak electricity.
+            The most common tariff in the UK.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_e2:
+        st.markdown(f"""
+        <div class="info-box">
+            <h4>Agile Octopus</h4>
+            <p>Half-hourly prices that follow the wholesale electricity market.
+            Cheap overnight (sometimes negative), expensive during the 4-7pm evening peak.
+            Rewards customers who can shift flexible loads away from peak hours.
+            Current avg: <b>{avg_p:.1f}p/kWh</b> in {region_label}.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_e3:
+        st.markdown("""
+        <div class="info-box">
+            <h4>Tracker Tariff</h4>
+            <p>A daily rate that tracks the wholesale market plus a supplier margin.
+            Less volatile than Agile, changing once per day rather than every 30 minutes.
+            A middle ground for customers who want some wholesale benefit without
+            actively managing when they use power.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("""
+    **What this tool shows:** Not every customer benefits from switching to a variable tariff.
+    A Peak Heavy customer who uses most of their electricity during the expensive 4-7pm window
+    will likely pay more on Agile than on Standard. This tool segments a synthetic customer
+    cohort by usage behaviour to identify who should switch, who should stay, and what the
+    expected saving is for each group. Agile prices are fetched live from the Octopus public
+    API -- change the region in the sidebar to see how recommendations shift by geography.
+    """)
+
+    st.markdown("---")
+
+    # Metrics tiles
+    for col, title, val, sub in zip(
+        st.columns(5),
+        ["Customers analysed", "Should switch", "Should stay on Standard",
+         "Avg annual saving", "Avg Agile rate"],
+        [f"{len(df):,}", f"{len(sw):,}", f"{len(stay):,}",
+         f"£{avg_s:.0f}", f"{avg_p:.1f}p/kWh"],
+        [f"{len(seg_filter)} segment(s)", f"{pct:.1f}% of cohort",
+         f"{100 - pct:.1f}% of cohort", "per switching customer",
+         f"last {days_back} days, {region_label}"],
+    ):
+        with col:
+            st.markdown(
+                f'<div class="metric-card"><h3>{title}</h3><p>{val}</p><span>{sub}</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
     st.subheader("Customer Segment Breakdown")
     st.caption(
         "Each segment represents a UK energy customer archetype. "
@@ -458,7 +417,9 @@ with tab1:
             hovertemplate="%{label}<br>%{value:,} customers (%{percent})<extra></extra>",
         ))
         fig.update_layout(
-            **BL, title="Cohort Composition", height=380, showlegend=False,
+            **BL,
+            title=dict(text="Cohort Composition", font=dict(color="#FFFFFF", size=14)),
+            height=380, showlegend=False,
             legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF")),
             annotations=[dict(text=f"{len(df):,}<br>customers", x=0.5, y=0.5,
                                font=dict(size=14, color="white"), showarrow=False)],
@@ -474,10 +435,12 @@ with tab1:
             sub = rec[rec["display_tariff"] == tariff]
             fig.add_trace(go.Bar(
                 x=sub["segment"], y=sub["count"], name=tariff, marker_color=color,
-                hovertemplate=f"%{{x}}<br>%{{y}} customers → {tariff}<extra></extra>",
+                hovertemplate=f"%{{x}}<br>%{{y}} customers -> {tariff}<extra></extra>",
             ))
         fig.update_layout(
-            **BL, title=f"Recommended Tariff by Segment (min saving ≥ £{min_saving}/yr)",
+            **BL,
+            title=dict(text=f"Recommended Tariff by Segment (min saving >= £{min_saving}/yr)",
+                       font=dict(color="#FFFFFF", size=14)),
             barmode="stack", height=380, xaxis_title="", yaxis_title="Customers",
             legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
                         font=dict(color="#FFFFFF")),
@@ -499,7 +462,6 @@ with tab1:
     ]
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
-    # ── Agile consumer profile ────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("#### Who is Agile ideal for?")
 
@@ -511,37 +473,37 @@ with tab1:
 
     st.markdown(f"""
     <div class="profile-box">
-        <h4>The Ideal Agile Customer — derived from this cohort</h4>
+        <h4>The Ideal Agile Customer -- derived from this cohort</h4>
         <p>
         The strongest Agile candidates in this cohort are concentrated in the
         <b>{dominant_seg}</b> segment. The profile below is calculated directly
-        from the current data — it updates when you change region or cohort size.
+        from the current data and updates when you change region or cohort size.
         </p>
         <ul>
             <li><b>Usage pattern:</b> Only ~{agile_peak_pct:.0f}% of their daily
-            consumption falls in peak hours (16:00–19:00). The majority of their
+            consumption falls in peak hours (16:00-19:00). The majority of their
             usage sits in overnight or daytime off-peak slots where Agile rates
             average {offpk_p:.1f}p/kWh.</li>
             <li><b>Typical consumption:</b> Around {agile_avg_kwh:,.0f} kWh/year.
-            They are not necessarily low consumers — they are smart schedulers.</li>
-            <li><b>Lifestyle indicators:</b> Works from home or flexible hours;
+            They are not necessarily low consumers -- they are smart schedulers.</li>
+            <li><b>Lifestyle indicators:</b> Works from home or keeps flexible hours;
             charges an EV overnight; runs dishwasher and washing machine on a timer
             after midnight; comfortable checking the Agile app before running
             high-draw appliances.</li>
             <li><b>Financial outcome:</b> Projected saving of
-            <b>£{agile_avg_saving:.0f}/year</b> vs Standard — driven by accessing
-            off-peak Agile slots at {offpk_p:.1f}p/kWh vs a Standard flat rate of
-            ~25p/kWh.</li>
+            <b>£{agile_avg_saving:.0f}/year</b> vs Standard, driven by accessing
+            off-peak Agile slots at {offpk_p:.1f}p/kWh vs a Standard flat rate
+            of ~25p/kWh.</li>
             <li><b>Why Agile beats Tracker for this group:</b> Tracker adds a
             supplier margin on top of the wholesale daily average. Customers who
-            actively time-shift their usage can do better than the daily average
-            by targeting the cheapest individual slots — something Tracker's single
-            daily rate doesn't reward.</li>
+            actively time-shift their usage can beat that average by targeting
+            the cheapest individual slots -- something Tracker's single daily
+            rate does not reward.</li>
         </ul>
         <p style="margin-top:10px; color:#ADB5BD;">
         <i>By contrast, a Peak Heavy customer faces Agile rates of {peak_p:.1f}p/kWh
         during their peak usage hours. For them, a Standard flat rate of ~25p/kWh
-        is the financially rational choice — and this tool correctly flags them
+        is the financially rational choice -- and this tool correctly flags them
         to stay put.</i>
         </p>
     </div>
@@ -570,7 +532,9 @@ with tab2:
                 boxmean=True, hovertemplate="%{y:.0f} £/yr<extra></extra>",
             ))
         fig.update_layout(
-            **BL, title="Saving Distribution — Switch Candidates Only (£/yr)",
+            **BL,
+            title=dict(text="Saving Distribution -- Switch Candidates Only (£/yr)",
+                       font=dict(color="#FFFFFF", size=14)),
             height=420, yaxis_title="Annual Saving (£)", showlegend=False,
             legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF")),
         )
@@ -591,7 +555,9 @@ with tab2:
                 hovertemplate=f"{label}: £%{{y:,.0f}}<extra></extra>",
             ))
         fig.update_layout(
-            **BL, title="Average Annual Cost by Tariff & Segment (£)",
+            **BL,
+            title=dict(text="Average Annual Cost by Tariff and Segment (£)",
+                       font=dict(color="#FFFFFF", size=14)),
             barmode="group", height=420, yaxis_title="Annual Cost (£)",
             legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
                         font=dict(color="#FFFFFF")),
@@ -612,7 +578,7 @@ with tab2:
 with tab3:
     st.subheader("Usage Profile vs Price Volatility Exposure")
     st.caption(
-        "Peak Heavy customers have high volatility exposure but Agile costs them more, not less — "
+        "Peak Heavy customers have high volatility exposure but Agile costs them more, not less -- "
         "their usage coincides with the most expensive slots. "
         "Off-Peak Opportunists have low exposure and the highest savings."
     )
@@ -645,8 +611,10 @@ with tab3:
             annotation_font_color="#FFB703",
         )
         fig.update_layout(
-            **BL, title="Volatility Exposure vs Potential Annual Saving",
-            height=440, xaxis_title="Volatility Exposure Score (0–1)",
+            **BL,
+            title=dict(text="Volatility Exposure vs Potential Annual Saving",
+                       font=dict(color="#FFFFFF", size=14)),
+            height=440, xaxis_title="Volatility Exposure Score (0-1)",
             yaxis_title="Annual Saving vs Standard (£)",
             legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF")),
         )
@@ -659,7 +627,7 @@ with tab3:
             mode="lines", fill="tozeroy",
             fillcolor="rgba(255,31,90,0.12)",
             line=dict(color=C["primary"], width=2),
-            hovertemplate="%{x:.1f}h — %{y:.1f}p/kWh<extra></extra>",
+            hovertemplate="%{x:.1f}h -- %{y:.1f}p/kWh<extra></extra>",
         ))
         fig.add_vrect(
             x0=16, x1=19, fillcolor="rgba(255,31,90,0.15)", line_width=0,
@@ -672,7 +640,9 @@ with tab3:
             annotation_position="top right",
         )
         fig.update_layout(
-            **BL, title=f"Real Agile Profile — {region_label}",
+            **BL,
+            title=dict(text=f"Real Agile Profile -- {region_label}",
+                       font=dict(color="#FFFFFF", size=14)),
             height=440, xaxis_title="Hour of day", yaxis_title="Avg price (p/kWh)",
             showlegend=False, legend=dict(bgcolor="rgba(0,0,0,0)"),
         )
@@ -684,14 +654,17 @@ with tab3:
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=pp["segment"], y=pp["peak_fraction"] * 100,
-        name="Peak (16:00–19:00)", marker_color=C["primary"],
+        name="Peak (16:00-19:00)", marker_color=C["primary"],
     ))
     fig.add_trace(go.Bar(
         x=pp["segment"], y=pp["offpeak"] * 100,
         name="Off-peak", marker_color=C["positive"],
     ))
     fig.update_layout(
-        **BL, barmode="stack", height=300, yaxis_title="% of daily usage",
+        **BL,
+        title=dict(text="Peak vs Off-Peak Usage Share by Segment",
+                   font=dict(color="#FFFFFF", size=14)),
+        barmode="stack", height=300, yaxis_title="% of daily usage",
         legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
                     font=dict(color="#FFFFFF")),
     )
@@ -746,5 +719,5 @@ with tab4:
         f"**Data note:** Agile unit rates are fetched live from the "
         f"[Octopus Energy public API](https://developer.octopus.energy/rest/reference) "
         f"for the {region_label} region. "
-        "Customer records are synthetic — see README for full methodology."
+        "Customer records are synthetic -- see README for full methodology."
     )
