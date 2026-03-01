@@ -268,7 +268,7 @@ with st.sidebar:
         ["Low & Stable", "High & Stable", "Peak Heavy", "Off-Peak Opportunist"],
         default=["Low & Stable", "High & Stable", "Peak Heavy", "Off-Peak Opportunist"],
     )
-    min_saving = st.slider("Min saving to recommend switch (£/yr)", 0, 200, 20, step=10)
+    min_saving = st.slider("Min saving to recommend switch (£/yr)", 0, 200, 100, step=10)
 
     st.markdown("---")
     st.markdown(
