@@ -26,8 +26,10 @@ BL = dict(
     plot_bgcolor=C['surface'],
     font=dict(family='Inter, Arial, sans-serif', color='#FFFFFF', size=13),
     margin=dict(l=50, r=30, t=60, b=40),
-    title=dict(font=dict(color='#FFFFFF', size=14)),
 )
+
+def chart_title(text):
+    return dict(text=text, font=dict(color='#FFFFFF', size=14))
 
 st.markdown("""
 <style>
@@ -418,7 +420,7 @@ with tab1:
         ))
         fig.update_layout(
             **BL,
-            title=dict(text="Cohort Composition", font=dict(color="#FFFFFF", size=14)),
+            title=chart_title("Cohort Composition"),
             height=380, showlegend=False,
             legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF")),
             annotations=[dict(text=f"{len(df):,}<br>customers", x=0.5, y=0.5,
@@ -439,8 +441,7 @@ with tab1:
             ))
         fig.update_layout(
             **BL,
-            title=dict(text=f"Recommended Tariff by Segment (min saving >= £{min_saving}/yr)",
-                       font=dict(color="#FFFFFF", size=14)),
+            title=chart_title(f"Recommended Tariff by Segment (min saving >= £{min_saving}/yr)"),
             barmode="stack", height=380, xaxis_title="", yaxis_title="Customers",
             legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
                         font=dict(color="#FFFFFF")),
@@ -533,8 +534,7 @@ with tab2:
             ))
         fig.update_layout(
             **BL,
-            title=dict(text="Saving Distribution -- Switch Candidates Only (£/yr)",
-                       font=dict(color="#FFFFFF", size=14)),
+            title=chart_title("Saving Distribution -- Switch Candidates Only (£/yr)"),
             height=420, yaxis_title="Annual Saving (£)", showlegend=False,
             legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF")),
         )
@@ -556,8 +556,7 @@ with tab2:
             ))
         fig.update_layout(
             **BL,
-            title=dict(text="Average Annual Cost by Tariff and Segment (£)",
-                       font=dict(color="#FFFFFF", size=14)),
+            title=chart_title("Average Annual Cost by Tariff and Segment (£)"),
             barmode="group", height=420, yaxis_title="Annual Cost (£)",
             legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
                         font=dict(color="#FFFFFF")),
@@ -612,8 +611,7 @@ with tab3:
         )
         fig.update_layout(
             **BL,
-            title=dict(text="Volatility Exposure vs Potential Annual Saving",
-                       font=dict(color="#FFFFFF", size=14)),
+            title=chart_title("Volatility Exposure vs Potential Annual Saving"),
             height=440, xaxis_title="Volatility Exposure Score (0-1)",
             yaxis_title="Annual Saving vs Standard (£)",
             legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#FFFFFF")),
@@ -641,8 +639,7 @@ with tab3:
         )
         fig.update_layout(
             **BL,
-            title=dict(text=f"Real Agile Profile -- {region_label}",
-                       font=dict(color="#FFFFFF", size=14)),
+            title=chart_title(f"Real Agile Profile -- {region_label}"),
             height=440, xaxis_title="Hour of day", yaxis_title="Avg price (p/kWh)",
             showlegend=False, legend=dict(bgcolor="rgba(0,0,0,0)"),
         )
@@ -662,8 +659,7 @@ with tab3:
     ))
     fig.update_layout(
         **BL,
-        title=dict(text="Peak vs Off-Peak Usage Share by Segment",
-                   font=dict(color="#FFFFFF", size=14)),
+        title=chart_title("Peak vs Off-Peak Usage Share by Segment"),
         barmode="stack", height=300, yaxis_title="% of daily usage",
         legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)",
                     font=dict(color="#FFFFFF")),
